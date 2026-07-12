@@ -4,6 +4,30 @@ Small coding tasks for testing agents such as Codex, Claude Code, and qwen-code.
 
 Each run gets its own workspace. Give the agent only the generated task prompt. After it finishes, run `capture`. That writes the diff, test output, final-answer file path, token-usage file path, and evaluation prompt to files.
 
+This workflow is also compatible with a llmstack-backed harness, but only on demand: prepare a run, open the isolated workspace, and then launch your llmstack-managed agent session explicitly. Nothing in this pack auto-runs tests or agent sessions.
+
+## On-demand llmstack headless runner
+
+For this workspace, an additional helper script is available when you want to drive the pack through your native llmstack-backed Claude/CCR setup without running each step manually:
+
+```bash
+cd local-coding-agent-evals/agent-problem-pack
+../../env/bin/python scripts/llmstack_headless_runner.py \
+  --model-key dflash-ornith35b-moe \
+  --activate-model \
+  --problem problem-01-tokenizer-regression
+```
+
+What it does:
+
+1. prepares an isolated run workspace with the existing `pack_tools.py` flow,
+2. reads `artifacts/task-prompt.txt`,
+3. launches Claude headless through `python -m llmstack.cli interactive -- ...`,
+4. stores stdout/stderr plus normalized `usage.json`,
+5. runs `capture` automatically to generate `diff.patch`, `verification.txt`, `git-status.txt`, and the evaluation prompt.
+
+Important: this script is still on-demand only. It does nothing unless you invoke it explicitly.
+
 
 
 &nbsp;
@@ -93,6 +117,7 @@ These agents can be driven from scripts or benchmark runners:
 | --- | --- | --- |
 | Codex | `codex exec "<prompt>"` | Codex calls this non-interactive mode. |
 | Cline | `cline "<prompt>"`, `cline --json "<prompt>"`, or `cline --yolo "<prompt>"` | Useful for one-shot runs and CI-style automation. |
+| Claude via llmstack | `python -m llmstack.cli interactive -- --output-format json -p "<prompt>"` | Uses the active llmstack model/backend and CCR wiring. |
 | Claude Code | `ollama launch claude --model <model> -- -p "<prompt>"` | The `--model` flag is required for headless launcher use. Claude arguments go after `--`. |
 | Qwen Code | `qwen --model <model> -p "<prompt>"` | Verify the installed flags with `qwen --help` if needed. |
 
@@ -103,6 +128,7 @@ Record token usage by default:
 - Codex: run with `--json` and extract the `usage` object from the final `turn.completed` event.
 - Qwen Code: run with `--output-format json` and extract the final `result.usage` object.
 - Claude Code through Ollama: run with `--output-format json` after `--` and extract `usage` plus `modelUsage`.
+- Claude Code through llmstack/CCR: record usage only if your wrapper exposes it; otherwise keep `exact: false` and explain the limitation in `notes`.
 - Cline: use JSON output if it exposes usage. Otherwise write `usage.json` with `exact: false`.
 
 Normalize usage into:

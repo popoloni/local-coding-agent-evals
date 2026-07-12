@@ -35,3 +35,22 @@ Defaults:
 ## Notes
 
 The benchmark uses Ollama's prompt evaluation metrics for prefill speed and output evaluation metrics for decode speed. On NVIDIA systems it samples GPU memory through `nvidia-smi`. On macOS, GPU memory is not reported separately, so Activity Monitor can be more informative for MLX-backed models.
+
+## llmstack adaptation
+
+This workspace also includes a llmstack-native variant:
+
+```bash
+env/bin/python local-coding-agent-evals/speed-memory-benchmark/llmstack_speed_memory_bench.py \
+	--model-key dflash-ornith35b-moe \
+	--activate-model \
+	--csv llmstack_speed_memory_results.csv
+```
+
+Notes:
+
+- The llmstack variant runs only when you call it explicitly. It does not auto-trigger benchmark or test execution.
+- `--model-key` uses the llmstack registry key from `llmstack_config.json`, not the raw served target.
+- `--activate-model` runs `python -m llmstack.cli model use <key> --restart` before the benchmark.
+- Prefill/decode timings are read from llmstack's `timings_csv` after each request, so the benchmark stays aligned with your existing DFlash/MLX/TurboQuant telemetry.
+- RSS memory is sampled from the process listening on llmstack's `inference_port`; NVIDIA GPU memory is sampled via `nvidia-smi` when available.

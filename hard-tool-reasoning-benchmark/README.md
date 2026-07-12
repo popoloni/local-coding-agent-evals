@@ -34,3 +34,21 @@ Currently, they cover:
 - `0.0`: wrong tool, invalid JSON, or missing `arguments`
 
 The content checks use required substrings, so the model can phrase answers naturally while still being scored consistently.
+
+## llmstack adaptation
+
+This workspace also includes a llmstack-native variant:
+
+```bash
+env/bin/python local-coding-agent-evals/hard-tool-reasoning-benchmark/llmstack_hard_reasoning_bench.py \
+	--model-key dflash-qwen35b-moe \
+	--activate-model \
+	--csv llmstack_hard_reasoning_results.csv
+```
+
+Notes:
+
+- The llmstack variant is on-demand only. It does not auto-run evaluation or problem-pack tests.
+- `--model-key` is the llmstack registry key from `llmstack_config.json`.
+- `--activate-model` switches the active llmstack backend before evaluation.
+- The script uses llmstack's local `/v1/chat/completions` endpoint, so it works with DFlash, MLX, and other llmstack-served models as long as they expose the OpenAI-compatible API.
