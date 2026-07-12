@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -24,7 +25,7 @@ from llmstack_eval_utils import (  # noqa: E402
     load_llmstack_config,
     resolve_model_target,
 )
-from pack_tools import PROBLEMS, capture_run, prepare_run  # noqa: E402
+from pack_tools import PROBLEMS, capture_run, prepare_run_with_options  # noqa: E402
 
 
 def parse_json_objects(text: str) -> list[dict]:
@@ -93,6 +94,15 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def write_workspace_llmstack_config(*, source_cfg: dict, workspace: Path, model_key: str) -> None:
+    # Keep network/model settings from the main config, but force dev_root to this run workspace.
+    workspace_cfg = dict(source_cfg)
+    workspace_cfg["dev_root"] = "."
+    workspace_cfg["active_model"] = model_key
+    config_path = workspace / "llmstack_config.json"
+    config_path.write_text(json.dumps(workspace_cfg, indent=2) + "\n", encoding="utf-8")
+
+
 def run_agent(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
@@ -101,11 +111,15 @@ def run_agent(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]
     return subprocess.run(command, cwd=cwd, text=True, capture_output=True, env=env)
 
 
-def prepare_and_run_one(*, llmstack_root: Path, python_bin: str, model_key: str, model_target: str, problem_id: str, run_name: str, bypass_permissions: bool) -> int:
-    run_dir = prepare_run(PACK_ROOT.resolve(), problem_id, run_name)
+def prepare_and_run_one(*, llmstack_root: Path, python_bin: str, model_key: str, model_target: str, problem_id: str, run_name: str, bypass_permissions: bool, overwrite: bool) -> int:
+    run_dir = prepare_run_with_options(PACK_ROOT.resolve(), problem_id, run_name, overwrite=overwrite)
     workspace = run_dir / "workspace"
     artifacts = run_dir / "artifacts"
     prompt = (artifacts / "task-prompt.txt").read_text(encoding="utf-8").strip()
+
+    # Ensure llmstack CLI loads the intended model registry while operating inside the run workspace.
+    root_cfg = load_llmstack_config(llmstack_root)
+    write_workspace_llmstack_config(source_cfg=root_cfg, workspace=workspace, model_key=model_key)
 
     command = default_claude_command(python_bin, prompt, bypass_permissions)
     result = run_agent(command, workspace)
@@ -131,6 +145,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python-bin", help="Python executable used for llmstack CLI calls.")
     parser.add_argument("--problem", choices=sorted(PROBLEMS), help="Run only one problem instead of the whole pack.")
     parser.add_argument("--run-name-prefix", default="llmstack-claude", help="Prefix used when creating run names.")
+    parser.add_argument("--run-name-suffix", help="Optional suffix appended to every run name (for example a timestamp).")
+    parser.add_argument("--overwrite", action="store_true", help="Replace an existing run directory with the same run name.")
     parser.add_argument("--no-bypass-permissions", action="store_true", help="Do not pass `--permission-mode bypassPermissions` to Claude.")
     return parser
 
@@ -146,10 +162,12 @@ def main(argv=None) -> int:
         cfg = load_llmstack_config(llmstack_root)
         _, model_target = resolve_model_target(cfg, model_key)
 
+    run_suffix = str(args.run_name_suffix or time.strftime("%Y%m%d_%H%M%S")).strip()
+
     problem_ids = [args.problem] if args.problem else sorted(PROBLEMS)
     failures = 0
     for index, problem_id in enumerate(problem_ids, start=1):
-        run_name = f"{args.run_name_prefix}-{model_key}-{index:02d}"
+        run_name = f"{args.run_name_prefix}-{model_key}-{run_suffix}-{index:02d}"
         failures += prepare_and_run_one(
             llmstack_root=llmstack_root,
             python_bin=python_bin,
@@ -158,6 +176,7 @@ def main(argv=None) -> int:
             problem_id=problem_id,
             run_name=run_name,
             bypass_permissions=not args.no_bypass_permissions,
+            overwrite=args.overwrite,
         )
 
     return 0 if failures == 0 else 1

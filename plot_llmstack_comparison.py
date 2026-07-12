@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +37,14 @@ class RetrySummary:
     model_key: str
     speed_retry_count: int | None
     reasoning_retry_count: int | None
+
+
+@dataclass
+class AgentPackPoint:
+    model_key: str
+    pass_rate: float
+    passed: int
+    total: int
 
 
 def combined_retry_count(speed_retry_count: int | None, reasoning_retry_count: int | None) -> int | None:
@@ -150,7 +160,85 @@ def load_retry_summaries(results_root: Path) -> list[RetrySummary]:
     return summaries
 
 
-def barplot(ax, labels: list[str], values: list[float], title: str, ylabel: str, higher_is_better: bool) -> None:
+def _parse_verification_exit_code(path: Path) -> int | None:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"^exit_code=(\d+)\s*$", text, flags=re.MULTILINE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _infer_model_from_run_name(run_name: str, known_models: list[str]) -> str | None:
+    for model in sorted(known_models, key=len, reverse=True):
+        if model in run_name:
+            return model
+    return None
+
+
+def load_agent_pack_points(results_root: Path, known_models: list[str]) -> list[AgentPackPoint]:
+    del results_root  # reserved for future correlation with a specific matrix folder
+    runs_root = Path(__file__).resolve().parent / "agent-problem-pack" / "runs"
+    if not runs_root.exists() or not known_models:
+        return []
+
+    latest_by_model_problem: dict[tuple[str, str], tuple[float, bool]] = {}
+    for verification_path in runs_root.glob("*/**/artifacts/verification.txt"):
+        run_dir = verification_path.parent.parent
+        metadata_path = run_dir / "metadata.json"
+        run_name = run_dir.name
+        if metadata_path.exists():
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                run_name = str(metadata.get("run_name") or run_name)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        model_key = _infer_model_from_run_name(run_name, known_models)
+        if model_key is None:
+            continue
+
+        problem_key = run_dir.parent.name
+        exit_code = _parse_verification_exit_code(verification_path)
+        passed = exit_code == 0
+        mtime = verification_path.stat().st_mtime
+        key = (model_key, problem_key)
+        previous = latest_by_model_problem.get(key)
+        if previous is None or mtime > previous[0]:
+            latest_by_model_problem[key] = (mtime, passed)
+
+    passed_total: dict[str, tuple[int, int]] = {}
+    for (model_key, _problem_key), (_mtime, passed) in latest_by_model_problem.items():
+        current_passed, current_total = passed_total.get(model_key, (0, 0))
+        passed_total[model_key] = (current_passed + (1 if passed else 0), current_total + 1)
+
+    points: list[AgentPackPoint] = []
+    for model_key, (passed, total) in sorted(passed_total.items()):
+        if total <= 0:
+            continue
+        points.append(
+            AgentPackPoint(
+                model_key=model_key,
+                pass_rate=(passed / total) * 100.0,
+                passed=passed,
+                total=total,
+            )
+        )
+    return points
+
+
+def barplot(
+    ax,
+    labels: list[str],
+    values: list[float],
+    title: str,
+    ylabel: str,
+    higher_is_better: bool,
+    annotations: list[str] | None = None,
+    missing: list[bool] | None = None,
+) -> None:
     if not labels:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=12)
         ax.set_title(title)
@@ -158,9 +246,11 @@ def barplot(ax, labels: list[str], values: list[float], title: str, ylabel: str,
         ax.set_yticks([])
         return
 
-    bars = ax.bar(labels, values, color="#2563eb")
-    for bar, value in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(), f"{value:.2f}", ha="center", va="bottom", fontsize=9)
+    colors = ["#9ca3af" if (missing and missing[idx]) else "#2563eb" for idx in range(len(values))]
+    bars = ax.bar(labels, values, color=colors)
+    for idx, (bar, value) in enumerate(zip(bars, values)):
+        label = annotations[idx] if annotations and idx < len(annotations) else f"{value:.2f}"
+        ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(), label, ha="center", va="bottom", fontsize=9)
 
     ax.set_title(title)
     ax.set_ylabel(ylabel)
@@ -171,7 +261,13 @@ def barplot(ax, labels: list[str], values: list[float], title: str, ylabel: str,
         ax.annotate("Lower is better", xy=(0.02, 0.95), xycoords="axes fraction", fontsize=9)
 
 
-def write_summary(output_path: Path, speed_points: list[SpeedPoint], reasoning_points: list[ReasoningPoint], retry_summaries: list[RetrySummary]) -> Path:
+def write_summary(
+    output_path: Path,
+    speed_points: list[SpeedPoint],
+    reasoning_points: list[ReasoningPoint],
+    retry_summaries: list[RetrySummary],
+    agent_points: list[AgentPackPoint],
+) -> Path:
     summary_path = output_path.with_suffix(".md")
     reasoning_map = {point.model_key: point for point in reasoning_points}
     lines = [
@@ -239,6 +335,25 @@ def write_summary(output_path: Path, speed_points: list[SpeedPoint], reasoning_p
     else:
         lines.append("| n/a | n/a | n/a | n/a |")
 
+    lines.extend([
+        "",
+        "## Agent Problem Pack Score",
+        "",
+        "| Model | Passed | Total | Pass rate % |",
+        "| --- | ---: | ---: | ---: |",
+    ])
+    agent_map = {point.model_key: point for point in agent_points}
+    agent_models = sorted(set(all_models) | set(agent_map.keys()))
+    if agent_models:
+        for model in agent_models:
+            point = agent_map.get(model)
+            if point is None:
+                lines.append(f"| {model} | n/a | n/a | n/a |")
+            else:
+                lines.append(f"| {model} | {point.passed} | {point.total} | {point.pass_rate:.1f} |")
+    else:
+        lines.append("| n/a | n/a | n/a | n/a |")
+
     summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return summary_path
 
@@ -263,30 +378,47 @@ def main(argv=None) -> int:
     speed_points = load_speed_points(results_root)
     reasoning_points = load_reasoning_points(results_root)
     retry_summaries = load_retry_summaries(results_root)
+    known_models = sorted({point.model_key for point in speed_points} | {point.model_key for point in reasoning_points})
+    agent_points = load_agent_pack_points(results_root, known_models)
     if not speed_points and not reasoning_points:
         print(f"error: no llmstack CSV files found under {results_root}")
         return 1
 
     speed_map = {point.model_key: point for point in speed_points}
     reasoning_map = {point.model_key: point for point in reasoning_points}
-    model_labels = sorted(set(speed_map.keys()) | set(reasoning_map.keys()))
+    agent_map = {point.model_key: point for point in agent_points}
+    model_labels = sorted(set(speed_map.keys()) | set(reasoning_map.keys()) | set(agent_map.keys()))
+
+    prefill_missing = [not (label in speed_map and speed_map[label].prefill_tps is not None) for label in model_labels]
+    decode_missing = [not (label in speed_map and speed_map[label].decode_tps is not None) for label in model_labels]
+    mlx_missing = [not (label in speed_map and speed_map[label].mlx_peak_gb is not None) for label in model_labels]
+    wall_missing = [not (label in speed_map and speed_map[label].wall_s is not None) for label in model_labels]
 
     prefill = [speed_map[label].prefill_tps if label in speed_map and speed_map[label].prefill_tps is not None else 0.0 for label in model_labels]
     decode = [speed_map[label].decode_tps if label in speed_map and speed_map[label].decode_tps is not None else 0.0 for label in model_labels]
     mlx_peak = [speed_map[label].mlx_peak_gb if label in speed_map and speed_map[label].mlx_peak_gb is not None else 0.0 for label in model_labels]
+    wall_s = [speed_map[label].wall_s if label in speed_map and speed_map[label].wall_s is not None else 0.0 for label in model_labels]
     pass_rate = [reasoning_map[label].pass_rate if label in reasoning_map else 0.0 for label in model_labels]
+    agent_pass_rate = [agent_map[label].pass_rate if label in agent_map else 0.0 for label in model_labels]
+
+    prefill_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(prefill, prefill_missing)]
+    decode_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(decode, decode_missing)]
+    mlx_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(mlx_peak, mlx_missing)]
+    wall_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(wall_s, wall_missing)]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10), constrained_layout=True)
+    fig, axes = plt.subplots(3, 2, figsize=(15, 14), constrained_layout=True)
     fig.suptitle(args.title, fontsize=16)
 
-    barplot(axes[0][0], model_labels, prefill, "Prefill Throughput", "Tokens/s", higher_is_better=True)
-    barplot(axes[0][1], model_labels, decode, "Decode Throughput", "Tokens/s", higher_is_better=True)
-    barplot(axes[1][0], model_labels, mlx_peak, "MLX Peak Memory", "GB", higher_is_better=False)
-    barplot(axes[1][1], model_labels, pass_rate, "Hard Reasoning Pass Rate", "%", higher_is_better=True)
+    barplot(axes[0][0], model_labels, prefill, "Prefill Throughput", "Tokens/s", higher_is_better=True, annotations=prefill_labels, missing=prefill_missing)
+    barplot(axes[0][1], model_labels, decode, "Decode Throughput", "Tokens/s", higher_is_better=True, annotations=decode_labels, missing=decode_missing)
+    barplot(axes[1][0], model_labels, mlx_peak, "MLX Peak Memory", "GB", higher_is_better=False, annotations=mlx_labels, missing=mlx_missing)
+    barplot(axes[1][1], model_labels, wall_s, "Largest Segment Wall Time", "Seconds", higher_is_better=False, annotations=wall_labels, missing=wall_missing)
+    barplot(axes[2][0], model_labels, pass_rate, "Hard Reasoning Pass Rate", "%", higher_is_better=True)
+    barplot(axes[2][1], model_labels, agent_pass_rate, "Agent Problem Pack Pass Rate", "%", higher_is_better=True)
 
     fig.savefig(output_path, dpi=150)
-    summary_path = write_summary(output_path, speed_points, reasoning_points, retry_summaries)
+    summary_path = write_summary(output_path, speed_points, reasoning_points, retry_summaries, agent_points)
 
     print(f"Wrote chart: {output_path}")
     print(f"Wrote summary: {summary_path}")

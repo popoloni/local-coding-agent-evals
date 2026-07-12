@@ -229,7 +229,11 @@ def run_for_model(*, llmstack_root: Path, python_bin: str, model_key: str, model
                 model_key,
                 "--run-name-prefix",
                 f"matrix-{model_key}",
+                "--run-name-suffix",
+                output_root.name,
             ]
+            if bool(cfg.get("agent_pack_overwrite_runs", False)):
+                cmd.append("--overwrite")
             if not bypass_permissions:
                 cmd.append("--no-bypass-permissions")
             result = subprocess.run(cmd, cwd=llmstack_root)

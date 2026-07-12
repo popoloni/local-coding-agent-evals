@@ -6,6 +6,13 @@ Each run gets its own workspace. Give the agent only the generated task prompt. 
 
 This workflow is also compatible with a llmstack-backed harness, but only on demand: prepare a run, open the isolated workspace, and then launch your llmstack-managed agent session explicitly. Nothing in this pack auto-runs tests or agent sessions.
 
+## Dependencies
+
+- Required: `python>=3.10` and `pytest` (declared in `pyproject.toml`).
+- Optional but recommended: `uv` for faster local workflows.
+
+If `uv` is missing, the pack runner now falls back automatically to `python -m pytest` for verification.
+
 ## On-demand llmstack headless runner
 
 For this workspace, an additional helper script is available when you want to drive the pack through your native llmstack-backed Claude/CCR setup without running each step manually:
@@ -38,13 +45,17 @@ From the `agent-problem-pack` folder, list the problems:
 
 ```bash
 cd agent-problem-pack
-uv run python scripts/pack_tools.py list
+python scripts/pack_tools.py list
+# optional equivalent:
+# uv run python scripts/pack_tools.py list
 ```
 
 Prepare a run:
 
 ```bash
-uv run python scripts/pack_tools.py prepare problem-01-tokenizer-regression run-1
+python scripts/pack_tools.py prepare problem-01-tokenizer-regression run-1
+# optional equivalent:
+# uv run python scripts/pack_tools.py prepare problem-01-tokenizer-regression run-1
 ```
 
 The command prints:
@@ -67,14 +78,18 @@ Paste the generated prompt from:
 The workspace includes its own `pyproject.toml`, so the agent can run:
 
 ```bash
-uv run pytest
+python -m pytest
+# optional equivalent:
+# uv run pytest
 ```
 
 After the agent finishes, capture the result from the `agent-problem-pack` folder:
 
 ```bash
-uv run python scripts/pack_tools.py capture \
+python scripts/pack_tools.py capture \
   runs/problem-01-tokenizer-regression/run-1
+# optional equivalent:
+# uv run python scripts/pack_tools.py capture runs/problem-01-tokenizer-regression/run-1
 ```
 
 Then open this file and use it as the evaluation prompt:
@@ -97,11 +112,11 @@ For automated runs, overwrite this file with the harness and model token usage. 
 
 | ID | Task | Test command |
 | --- | --- | --- |
-| `problem-01-tokenizer-regression` | Fix empty-token handling. | `uv run pytest` |
-| `problem-02-shell-command-injection` | Remove command-injection risk. | `uv run pytest` |
-| `problem-03-cross-platform-task-path` | Make task-file loading independent of the current directory. | `uv run pytest tests` |
-| `problem-04-import-error-after-refactor` | Preserve an old import path after a refactor. | `uv run pytest tests` |
-| `problem-05-mutable-default-cache` | Fix state leaking through a mutable default argument. | `uv run pytest` |
+| `problem-01-tokenizer-regression` | Fix empty-token handling. | `python -m pytest` (or `uv run pytest`) |
+| `problem-02-shell-command-injection` | Remove command-injection risk. | `python -m pytest` (or `uv run pytest`) |
+| `problem-03-cross-platform-task-path` | Make task-file loading independent of the current directory. | `python -m pytest tests` (or `uv run pytest tests`) |
+| `problem-04-import-error-after-refactor` | Preserve an old import path after a refactor. | `python -m pytest tests` (or `uv run pytest tests`) |
+| `problem-05-mutable-default-cache` | Fix state leaking through a mutable default argument. | `python -m pytest` (or `uv run pytest`) |
 
 Use a new run name for each agent or repeat attempt, for example `codex-1`, `claude-1`, or `qwen-1`.
 
@@ -192,11 +207,11 @@ Target agent:
 - Claude command shape, if CLI is Claude: ollama launch claude --model qwen3.6:35b -- -p "<prompt>"
 
 Use the pack scripts directly:
-- list problems with uv run python scripts/pack_tools.py list
+- list problems with python scripts/pack_tools.py list
 - prepare one isolated workspace per problem
 - run the target agent in headless mode from each workspace using that problem's artifacts/task-prompt.txt
 - use the agent's JSON output mode when available and write token usage to artifacts/usage.json
-- capture each result with uv run python scripts/pack_tools.py capture
+- capture each result with python scripts/pack_tools.py capture
 
 For each problem, read:
 - workspace/AGENT_FINAL_ANSWER.md

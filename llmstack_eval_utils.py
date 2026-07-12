@@ -383,5 +383,6 @@ def build_chat_payload(model_target: str, prompt: str, max_tokens: int, temperat
 def default_python_bin(root: Path) -> str:
     candidate = root / "env" / "bin" / "python"
     if candidate.exists():
-        return str(candidate.resolve())
+        # Preserve the venv launcher path; resolving symlinks can bypass venv site-packages.
+        return str(candidate)
     return sys.executable

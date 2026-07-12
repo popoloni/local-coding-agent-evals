@@ -11,6 +11,22 @@ from pathlib import Path
 
 
 PACK_ROOT = Path(__file__).resolve().parents[1]
+_UV_FALLBACK_WARNED = False
+
+
+def _resolve_command_with_fallback(command):
+    global _UV_FALLBACK_WARNED
+    parts = tuple(command)
+    if len(parts) >= 3 and parts[0] == "uv" and parts[1] == "run" and parts[2] == "pytest":
+        if shutil.which("uv") is None:
+            if not _UV_FALLBACK_WARNED:
+                print(
+                    "warning: 'uv' not found; falling back to current interpreter for pytest",
+                    file=sys.stderr,
+                )
+                _UV_FALLBACK_WARNED = True
+            return (sys.executable, "-m", "pytest", *parts[3:])
+    return parts
 
 
 @dataclass(frozen=True)
@@ -115,7 +131,8 @@ def slugify(value):
 def run_command(command, cwd):
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
-    return subprocess.run(command, cwd=cwd, text=True, capture_output=True, env=env)
+    resolved = _resolve_command_with_fallback(command)
+    return subprocess.run(resolved, cwd=cwd, text=True, capture_output=True, env=env)
 
 
 def checked_run(command, cwd):
@@ -176,6 +193,10 @@ def write_run_metadata(run_dir, problem, run_name):
 
 
 def prepare_run(root, problem_id, run_name):
+    return prepare_run_with_options(root, problem_id, run_name, overwrite=False)
+
+
+def prepare_run_with_options(root, problem_id, run_name, overwrite=False):
     problem = PROBLEMS[problem_id]
     safe_run_name = slugify(run_name)
     source = root / problem.identifier
@@ -186,7 +207,10 @@ def prepare_run(root, problem_id, run_name):
     workspace = run_dir / "workspace"
     artifacts = run_dir / "artifacts"
     if run_dir.exists():
-        raise FileExistsError(f"run already exists: {run_dir}")
+        if overwrite:
+            shutil.rmtree(run_dir)
+        else:
+            raise FileExistsError(f"run already exists: {run_dir}")
 
     artifacts.mkdir(parents=True)
     copy_problem(source, workspace)
@@ -216,6 +240,7 @@ def prepare_run(root, problem_id, run_name):
         workspace,
     )
     return run_dir
+
 
 
 def load_run_problem(run_dir):
@@ -312,6 +337,7 @@ def build_parser():
     prepare_parser = subparsers.add_parser("prepare", help="Create an isolated run workspace.")
     prepare_parser.add_argument("problem", choices=sorted(PROBLEMS))
     prepare_parser.add_argument("run_name")
+    prepare_parser.add_argument("--overwrite", action="store_true", help="Replace an existing run directory with the same name.")
 
     capture_parser = subparsers.add_parser("capture", help="Capture diff, verification output, and evaluation prompt.")
     capture_parser.add_argument("run_dir", type=Path)
@@ -325,7 +351,12 @@ def main(argv=None):
             list_problems()
             return 0
         if args.command == "prepare":
-            run_dir = prepare_run(args.root.resolve(), args.problem, args.run_name)
+            run_dir = prepare_run_with_options(
+                args.root.resolve(),
+                args.problem,
+                args.run_name,
+                overwrite=args.overwrite,
+            )
             print(run_dir)
             print(run_dir / "artifacts" / "task-prompt.txt")
             return 0
