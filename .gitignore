@@ -2,5 +2,15 @@
 __pycache__/
 .pytest_cache/
 .venv/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*$py.class
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
 agent-problem-pack/runs/
+agent-problem-pack/.pytest_cache/
 results/
