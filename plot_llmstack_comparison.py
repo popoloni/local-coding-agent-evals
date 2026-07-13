@@ -18,9 +18,13 @@ import matplotlib.pyplot as plt
 class SpeedPoint:
     model_key: str
     requested_words: int
+    prefill_time_s: float | None
     prefill_tps: float | None
+    decode_time_s: float | None
     decode_tps: float | None
     mlx_peak_gb: float | None
+    server_rss_peak_mb: float | None
+    nvidia_gpu_peak_mb: float | None
     wall_s: float | None
 
 
@@ -88,23 +92,53 @@ def latest_csv_per_model(results_root: Path, filename: str) -> dict[str, Path]:
     return by_model
 
 
+def _speed_row_score(row: dict, *, mtime: float) -> tuple[int, int, float]:
+    requested_words = to_int(row.get("requested_words")) or 0
+    available_fields = sum(
+        1
+        for value in (
+            row.get("prefill_time_s"),
+            row.get("prefill_real_tps"),
+            row.get("decode_time_s"),
+            row.get("decode_tps"),
+            row.get("wall_s"),
+            row.get("mlx_peak_gb"),
+            row.get("server_rss_peak_mb"),
+            row.get("nvidia_gpu_peak_mb"),
+        )
+        if value not in (None, "")
+    )
+    return (requested_words, available_fields, mtime)
+
+
 def load_speed_points(results_root: Path) -> list[SpeedPoint]:
-    speed_files = latest_csv_per_model(results_root, "llmstack_speed_memory_results.csv")
-    points: list[SpeedPoint] = []
-    for model_key, csv_path in sorted(speed_files.items()):
+    candidates = sorted(results_root.glob("llmstack-matrix-*/**/llmstack_speed_memory_results.csv"))
+    best_rows: dict[str, tuple[tuple[int, int, float], dict]] = {}
+    for csv_path in candidates:
+        model_key = csv_path.parent.name
         with csv_path.open("r", encoding="utf-8", newline="") as handle:
             rows = list(csv.DictReader(handle))
         if not rows:
             continue
-        rows.sort(key=lambda row: to_int(row.get("requested_words")) or 0)
-        row = rows[-1]
+        for row in rows:
+            score = _speed_row_score(row, mtime=csv_path.stat().st_mtime)
+            existing = best_rows.get(model_key)
+            if existing is None or score > existing[0]:
+                best_rows[model_key] = (score, row)
+
+    points: list[SpeedPoint] = []
+    for model_key, (_score, row) in sorted(best_rows.items()):
         points.append(
             SpeedPoint(
                 model_key=model_key,
                 requested_words=to_int(row.get("requested_words")) or 0,
+                prefill_time_s=to_float(row.get("prefill_time_s")),
                 prefill_tps=to_float(row.get("prefill_real_tps")),
+                decode_time_s=to_float(row.get("decode_time_s")),
                 decode_tps=to_float(row.get("decode_tps")),
                 mlx_peak_gb=to_float(row.get("mlx_peak_gb")),
+                server_rss_peak_mb=to_float(row.get("server_rss_peak_mb")),
+                nvidia_gpu_peak_mb=to_float(row.get("nvidia_gpu_peak_mb")),
                 wall_s=to_float(row.get("wall_s")),
             )
         )
@@ -275,10 +309,24 @@ def write_summary(
         "",
         f"Generated at: {datetime.now().isoformat(timespec='seconds')}",
         "",
+        "## Log Comparison",
+        "",
+        "The llmstack speed/memory benchmark and the original benchmark package are comparable because they emit the same core metrics: wall time, prefill time, decode time, prefill throughput, decode throughput, RSS peak memory, and GPU peak memory when available.",
+        "",
+        "| Metric | llmstack speed benchmark | Original package benchmark | Comparable? |",
+        "| --- | --- | --- | --- |",
+        "| wall_s | `wall_s` | `wall_s` | yes |",
+        "| prefill time | `prefill_time_s` | `prefill_time_s` | yes |",
+        "| prefill throughput | `prefill_real_tps` | `prefill_real_tps` / `prompt_tokens_per_s` | yes |",
+        "| decode time | `decode_time_s` | `decode_time_s` | yes |",
+        "| decode throughput | `decode_tps` | `decode_tps` / `eval_tokens_per_s` | yes |",
+        "| RSS peak | `server_rss_peak_mb` | `ollama_rss_peak_mb` or `server_rss_peak_mb` | mostly yes |",
+        "| GPU peak | `nvidia_gpu_peak_mb` | `nvidia_gpu_peak_mb` | yes when GPU telemetry exists |",
+        "| reasoning score | `passed` / `total` in hard reasoning CSV | same schema in the llmstack adaptation | yes |",
         "## Latest Speed Snapshot (largest segment per model)",
         "",
-        "| Model | Segment words | Prefill tok/s | Decode tok/s | MLX peak GB | Wall s |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Model | Segment words | Prefill time s | Prefill tok/s | Decode time s | Decode tok/s | Wall s | MLX peak GB | RSS peak MB | GPU peak MB |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     if speed_points:
@@ -286,13 +334,17 @@ def write_summary(
             lines.append(
                 "| "
                 f"{point.model_key} | {point.requested_words} | "
+                f"{point.prefill_time_s if point.prefill_time_s is not None else 'n/a'} | "
                 f"{point.prefill_tps if point.prefill_tps is not None else 'n/a'} | "
+                f"{point.decode_time_s if point.decode_time_s is not None else 'n/a'} | "
                 f"{point.decode_tps if point.decode_tps is not None else 'n/a'} | "
+                f"{point.wall_s if point.wall_s is not None else 'n/a'} | "
                 f"{point.mlx_peak_gb if point.mlx_peak_gb is not None else 'n/a'} | "
-                f"{point.wall_s if point.wall_s is not None else 'n/a'} |"
+                f"{point.server_rss_peak_mb if point.server_rss_peak_mb is not None else 'n/a'} | "
+                f"{point.nvidia_gpu_peak_mb if point.nvidia_gpu_peak_mb is not None else 'n/a'} |"
             )
     else:
-        lines.append("| n/a | n/a | n/a | n/a | n/a | n/a |")
+        lines.append("| n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |")
 
     lines.extend([
         "",
@@ -366,6 +418,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _format_value(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f}"
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     results_root = args.results_root.resolve()
@@ -390,32 +448,50 @@ def main(argv=None) -> int:
     model_labels = sorted(set(speed_map.keys()) | set(reasoning_map.keys()) | set(agent_map.keys()))
 
     prefill_missing = [not (label in speed_map and speed_map[label].prefill_tps is not None) for label in model_labels]
+    prefill_time_missing = [not (label in speed_map and speed_map[label].prefill_time_s is not None) for label in model_labels]
     decode_missing = [not (label in speed_map and speed_map[label].decode_tps is not None) for label in model_labels]
+    decode_time_missing = [not (label in speed_map and speed_map[label].decode_time_s is not None) for label in model_labels]
     mlx_missing = [not (label in speed_map and speed_map[label].mlx_peak_gb is not None) for label in model_labels]
+    rss_missing = [not (label in speed_map and speed_map[label].server_rss_peak_mb is not None) for label in model_labels]
+    gpu_missing = [not (label in speed_map and speed_map[label].nvidia_gpu_peak_mb is not None) for label in model_labels]
     wall_missing = [not (label in speed_map and speed_map[label].wall_s is not None) for label in model_labels]
 
     prefill = [speed_map[label].prefill_tps if label in speed_map and speed_map[label].prefill_tps is not None else 0.0 for label in model_labels]
+    prefill_time = [speed_map[label].prefill_time_s if label in speed_map and speed_map[label].prefill_time_s is not None else 0.0 for label in model_labels]
     decode = [speed_map[label].decode_tps if label in speed_map and speed_map[label].decode_tps is not None else 0.0 for label in model_labels]
+    decode_time = [speed_map[label].decode_time_s if label in speed_map and speed_map[label].decode_time_s is not None else 0.0 for label in model_labels]
     mlx_peak = [speed_map[label].mlx_peak_gb if label in speed_map and speed_map[label].mlx_peak_gb is not None else 0.0 for label in model_labels]
+    rss_peak = [speed_map[label].server_rss_peak_mb if label in speed_map and speed_map[label].server_rss_peak_mb is not None else 0.0 for label in model_labels]
+    gpu_peak = [speed_map[label].nvidia_gpu_peak_mb if label in speed_map and speed_map[label].nvidia_gpu_peak_mb is not None else 0.0 for label in model_labels]
     wall_s = [speed_map[label].wall_s if label in speed_map and speed_map[label].wall_s is not None else 0.0 for label in model_labels]
     pass_rate = [reasoning_map[label].pass_rate if label in reasoning_map else 0.0 for label in model_labels]
     agent_pass_rate = [agent_map[label].pass_rate if label in agent_map else 0.0 for label in model_labels]
 
     prefill_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(prefill, prefill_missing)]
+    prefill_time_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(prefill_time, prefill_time_missing)]
     decode_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(decode, decode_missing)]
+    decode_time_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(decode_time, decode_time_missing)]
     mlx_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(mlx_peak, mlx_missing)]
+    rss_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(rss_peak, rss_missing)]
+    gpu_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(gpu_peak, gpu_missing)]
     wall_labels = ["n/a" if missing else f"{value:.2f}" for value, missing in zip(wall_s, wall_missing)]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(3, 2, figsize=(15, 14), constrained_layout=True)
+    fig, axes = plt.subplots(4, 2, figsize=(16, 18), constrained_layout=True)
     fig.suptitle(args.title, fontsize=16)
 
     barplot(axes[0][0], model_labels, prefill, "Prefill Throughput", "Tokens/s", higher_is_better=True, annotations=prefill_labels, missing=prefill_missing)
-    barplot(axes[0][1], model_labels, decode, "Decode Throughput", "Tokens/s", higher_is_better=True, annotations=decode_labels, missing=decode_missing)
-    barplot(axes[1][0], model_labels, mlx_peak, "MLX Peak Memory", "GB", higher_is_better=False, annotations=mlx_labels, missing=mlx_missing)
-    barplot(axes[1][1], model_labels, wall_s, "Largest Segment Wall Time", "Seconds", higher_is_better=False, annotations=wall_labels, missing=wall_missing)
-    barplot(axes[2][0], model_labels, pass_rate, "Hard Reasoning Pass Rate", "%", higher_is_better=True)
-    barplot(axes[2][1], model_labels, agent_pass_rate, "Agent Problem Pack Pass Rate", "%", higher_is_better=True)
+    barplot(axes[0][1], model_labels, prefill_time, "Prefill Time", "Seconds", higher_is_better=False, annotations=prefill_time_labels, missing=prefill_time_missing)
+    barplot(axes[1][0], model_labels, decode, "Decode Throughput", "Tokens/s", higher_is_better=True, annotations=decode_labels, missing=decode_missing)
+    barplot(axes[1][1], model_labels, decode_time, "Decode Time", "Seconds", higher_is_better=False, annotations=decode_time_labels, missing=decode_time_missing)
+    barplot(axes[2][0], model_labels, wall_s, "Largest Segment Wall Time", "Seconds", higher_is_better=False, annotations=wall_labels, missing=wall_missing)
+    barplot(axes[2][1], model_labels, mlx_peak, "MLX Peak Memory", "GB", higher_is_better=False, annotations=mlx_labels, missing=mlx_missing)
+    barplot(axes[3][0], model_labels, rss_peak, "Server RSS Peak Memory", "MB", higher_is_better=False, annotations=rss_labels, missing=rss_missing)
+    barplot(axes[3][1], model_labels, agent_pass_rate, "Agent Problem Pack Pass Rate", "%", higher_is_better=True)
+
+    # Keep the hard reasoning view in the figure title area by adding it as an overlaid annotation.
+    # The markdown summary already carries the full reasoning table.
+    fig.text(0.5, 0.01, "Hard reasoning scores are included in the markdown summary", ha="center", fontsize=9)
 
     fig.savefig(output_path, dpi=150)
     summary_path = write_summary(output_path, speed_points, reasoning_points, retry_summaries, agent_points)
