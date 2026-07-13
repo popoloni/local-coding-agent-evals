@@ -119,6 +119,18 @@ The wrapper activates `env`, creates a timestamped output directory under `local
 
 The matrix runner is on-demand only. It starts one backend/model pair at a time, starts Headroom, runs the selected evals, stops the services, and then continues to the next configured pair.
 
+For Agent Problem Pack-only reproduction, the workspace provides a dedicated alias wrapper:
+
+```bash
+bin/launch_llmstack_agent_pack_matrix.bash
+```
+
+That wrapper always enables:
+
+- `--include-agent-pack`
+- `--skip-speed`
+- `--skip-reasoning`
+
 Comparison graph script (reuse author script if present, else fallback):
 
 ```bash
@@ -126,6 +138,17 @@ bin/plot_llmstack_comparison.bash
 ```
 
 This command searches for a native author plotting script first. If none is found, it generates `local-coding-agent-evals/results/llmstack_comparison.png` plus a markdown summary from the latest llmstack speed/reasoning CSV files for each model.
+
+From the workspace root, the same wrapper now also regenerates the repo-level Agent Problem Pack report after plotting:
+
+- `AGENT_PROBLEM_PACK_RESULTS.md`
+
+So the practical reproduction flow from the main repository becomes:
+
+```bash
+bin/launch_llmstack_agent_pack_matrix.bash
+bin/plot_llmstack_comparison.bash
+```
 
 &nbsp;
 ## Agent problem pack
